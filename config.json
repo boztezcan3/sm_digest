@@ -5,7 +5,7 @@
     "count": 10,
     "max_age_hours": 72,
     "candidates_per_sub": 12,
-    "allow_nsfw": false,
+    "allow_nsfw": true,
     "subreddits": [
       {"name": "nba"},
       {"name": "turkey"},
@@ -22,7 +22,7 @@
         "always_include": true
       }
     ],
-    "taste": "I like substantive news, analysis, and good discussions over memes, low-effort posts, and rage-bait. r/nba: big games, trades, injuries, notable news and standout performances. r/turkey and r/europe: significant news and thoughtful discussion. r/atlanta: local news, events, and things affecting residents. r/stocks: analysis and market-moving news over memes and gains/loss screenshots. r/slaythespire: strategy insights, patch/mod news, interesting runs."
+    "taste": "I like substantive news, analysis, and good discussions over memes, low-effort posts, and rage-bait. r/nba:trades, notable news & injuries or good analysis, no game scores, no game threads. r/turkey and r/europe: significant news and thoughtful discussion. r/atlanta: local news, events, and things affecting residents. r/stocks: analysis and market-moving news over memes and gains/loss screenshots. r/slaythespire: strategy insights, patch/mod news, no memes."
   },
   "youtube": {
     "count": 10,
