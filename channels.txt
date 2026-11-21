@@ -1,0 +1,3 @@
+# One YouTube channel ID per line (starts with UC...). Anything after # is a label.
+# Not needed if you add a subscriptions.csv from Google Takeout (see README).
+# UCxxxxxxxxxxxxxxxxxxxxxx  # Example Channel
