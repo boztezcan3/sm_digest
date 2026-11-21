@@ -19,10 +19,9 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Build digest
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
-          REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          MODEL: google/gemini-2.5-flash-lite
           FORCE: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
         run: python digest.py
       - name: Commit results
