@@ -1,15 +1,12 @@
-# sm_digest
+# sm_digest (YouTube)
 
-Reddit + YouTube digest, rebuilt every 2 days by GitHub Actions and published with GitHub Pages.
+Picks the videos worth watching from your subscribed channels every ~2 days and publishes them with GitHub Pages.
 
 ## Setup
-1. **Secrets** (repo Settings > Secrets and variables > Actions):
-   - `ANTHROPIC_API_KEY` (required)
-   - `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` (recommended; Reddit often blocks anonymous requests from GitHub's servers. Create a "script" app at https://www.reddit.com/prefs/apps)
-   - `YOUTUBE_API_KEY` (optional; adds exact video length and view counts)
-2. **YouTube subscriptions**: put `subscriptions.csv` from Google Takeout in the repo root
-   (takeout.google.com > deselect all > YouTube and YouTube Music > "subscriptions"), or list channel IDs in `channels.txt`.
-3. **Pages**: Settings > Pages > Deploy from a branch > `main` / `/docs`.
-4. **Run it**: Actions tab > "Build digest" > Run workflow. After that it runs automatically (checks daily, builds every ~2 days).
+1. Repo secrets (Settings > Secrets and variables > Actions): `OPENROUTER_API_KEY`, `YOUTUBE_API_KEY`.
+2. Put `subscriptions.csv` (Google Takeout > YouTube > subscriptions) in the repo root, or list channel IDs in `channels.txt`.
+3. Settings > Pages > Deploy from a branch > `main` / `/docs`.
+4. Actions tab > "Build digest" > Run workflow. After that it runs automatically.
 
-Edit `config.json` to change subreddits, counts, and your taste descriptions.
+Edit `config.json` for your taste/counts, `channel_rules.json` for per-channel rules, and `MODEL` in `.github/workflows/digest.yml` to change the model.
+
