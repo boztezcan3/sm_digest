@@ -1,29 +1,6 @@
 {
   "timezone": "America/New_York",
   "min_hours_between_runs": 46,
-  "reddit": {
-    "count": 10,
-    "max_age_hours": 72,
-    "candidates_per_sub": 12,
-    "allow_nsfw": true,
-    "subreddits": [
-      {"name": "nba"},
-      {"name": "turkey"},
-      {"name": "atlanta"},
-      {"name": "europe"},
-      {"name": "stocks"},
-      {"name": "slaythespire", "max_age_hours": 96},
-      {
-        "name": "onepiece",
-        "sort": "new",
-        "fetch_limit": 100,
-        "max_age_hours": 168,
-        "title_regex": "chapter\\s*\\d+.*discussion|discussion.*chapter\\s*\\d+",
-        "always_include": true
-      }
-    ],
-    "taste": "I like substantive news, analysis, and good discussions over memes, low-effort posts, and rage-bait. r/nba:trades, notable news & injuries or good analysis, no game scores, no game threads. r/turkey and r/europe: significant news and thoughtful discussion. r/atlanta: local news, events, and things affecting residents. r/stocks: analysis and market-moving news over memes and gains/loss screenshots. r/slaythespire: strategy insights, patch/mod news, no memes."
-  },
   "youtube": {
     "count": 10,
     "max_age_hours": 96,
