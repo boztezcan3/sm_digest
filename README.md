@@ -9,4 +9,3 @@ Picks the videos worth watching from your subscribed channels every ~2 days and 
 4. Actions tab > "Build digest" > Run workflow. After that it runs automatically.
 
 Edit `config.json` for your taste/counts, `channel_rules.json` for per-channel rules, and `MODEL` in `.github/workflows/digest.yml` to change the model.
-
