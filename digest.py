@@ -66,7 +66,7 @@ def load_channels():
                 row = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
                 cid = row.get("channel id", "")
                 if cid:
-                    chans[cid] = row.get("channel title", "") or cid
+                    chans[cid] = (row.get("channel title", "") or cid, row.get("priority", "").lower())
     txt_path = ROOT / "channels.txt"
     if txt_path.exists():
         for line in txt_path.read_text(encoding="utf-8").splitlines():
@@ -75,21 +75,27 @@ def load_channels():
                 continue
             cid, _, label = line.partition("#")
             if cid.strip():
-                chans[cid.strip()] = label.strip() or cid.strip()
-    return list(chans.items())
+                chans[cid.strip()] = (label.strip() or cid.strip(), "")
+    return [(cid, label, pri) for cid, (label, pri) in chans.items()]
 
 
 def find_rule(v):
+    """Rule from channel_rules.json (if any); the CSV's Priority column fills in priority if the rule has none."""
+    rule = {}
     for key in (v["channel_id"], v["channel"], v["label"]):
         k = (key or "").strip().lower()
         if k in RULES:
             USED_RULES.add(k)
-            return RULES[k]
-    return {}
+            rule = dict(RULES[k])
+            break
+    pri = (rule.get("priority") or v.get("csv_priority") or "").strip().lower()
+    if pri in ("must", "high", "low"):
+        rule["priority"] = pri
+    return rule
 
 
 def fetch_channel(ch):
-    cid, label = ch
+    cid, label, csv_priority = ch
     r = requests.get(
         f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}",
         headers={"User-Agent": UA}, timeout=20,
@@ -107,6 +113,7 @@ def fetch_channel(ch):
             "channel": channel,
             "channel_id": cid,
             "label": label,
+            "csv_priority": csv_priority,
             "published": datetime.fromisoformat(e.findtext("a:published", namespaces=NS)).timestamp(),
             "desc_full": desc[:3000],
             "desc": desc[:200],
@@ -175,6 +182,7 @@ def collect_youtube(state, errors):
     if not channels:
         errors.append("No channels found (add subscriptions.csv or channels.txt).")
         return []
+    channels = [c for c in channels if c[2] != "none"]  # Priority "none" = never show
     seen = state["seen"]
     now = time.time()
     videos, failed = [], 0
@@ -246,7 +254,7 @@ def fmt_dur(sec):
 
 
 def describe(v):
-    tag = {"high": "[HIGH PRIORITY CHANNEL] ", "low": "[LOW PRIORITY CHANNEL] "}.get(v["rule"].get("priority"), "")
+    tag = {"must": "[MUST-WATCH CHANNEL] ", "high": "[HIGH PRIORITY CHANNEL] ", "low": "[LOW PRIORITY CHANNEL] "}.get(v["rule"].get("priority"), "")
     return tag + " | ".join(x for x in [
         v["channel"], v["title"], fmt_dur(v["duration"]),
         f"{fmt_num(v['views'])} views" if v["views"] is not None else "",
@@ -305,7 +313,7 @@ li{padding:10px 0;border-bottom:1px solid var(--line)}.meta{color:var(--mut);fon
 
 def render_page(date_label, items, errors, archive_href, home_href=None):
     rows = "".join(
-        f'<li><a href="{html.escape(v["url"])}">{html.escape(("★ " if v["rule"].get("always_include") or v["rule"].get("priority") == "high" else "") + v["title"])}</a>'
+        f'<li><a href="{html.escape(v["url"])}">{html.escape(("★ " if v["rule"].get("always_include") or v["rule"].get("priority") in ("must", "high") else "") + v["title"])}</a>'
         f'<div class="meta">{html.escape(" · ".join(x for x in [v["channel"], fmt_dur(v["duration"]), (fmt_num(v["views"]) + " views") if v["views"] is not None else "", fmt_age(v["published"])] if x))}</div>'
         + (f'<div class="why">{html.escape(why)}</div>' if why else "") + "</li>"
         for v, why in items
@@ -359,8 +367,11 @@ def main():
     y = CFG["youtube"]
     n = y["count"]
 
-    must = sorted((v for v in cands if v["rule"].get("always_include")),
-                  key=lambda v: v["published"], reverse=True)[:n]
+    must_all = sorted((v for v in cands if v["rule"].get("always_include") or v["rule"].get("priority") == "must"),
+                      key=lambda v: v["published"], reverse=True)
+    must = must_all[: min(y.get("max_must", 6), n)]
+    for v in must_all[len(must):]:  # overflow competes with the rest as high priority
+        v["rule"] = dict(v["rule"], priority="high", always_include=False)
     must_ids = {v["id"] for v in must}
     rest = [v for v in cands if v["id"] not in must_ids]
 
@@ -372,7 +383,7 @@ def main():
     if notes:
         extra += " Per-channel instructions: " + " ".join(f'For "{c}": {t}' for c, t in notes.items())
 
-    items = [(v, "Always-include channel") for v in must] + pick(rest, n - len(must), y["taste"], extra, errors)
+    items = [(v, "Must-watch channel") for v in must] + pick(rest, n - len(must), y["taste"], extra, errors)
 
     t = time.time()
     state["seen"].update({v["id"]: t for v, _ in items})
