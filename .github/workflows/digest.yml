@@ -2,11 +2,21 @@ name: Build digest
 
 on:
   schedule:
-    - cron: "0 11 * * *"   # checked daily; script only builds if >=46h since last run
-  workflow_dispatch:        # manual "Run workflow" button (always builds)
+    - cron: "0 11 * * *"   # checked daily; script only builds if >=36h since last run
+  workflow_dispatch:        # manual "Run workflow" button
+    inputs:
+      mode:
+        description: "digest = regular run now; monthly = 30-day roundup (top 25, saved to the archive only)"
+        type: choice
+        options: [digest, monthly]
+        default: digest
 
 permissions:
   contents: write
+
+concurrency:
+  group: digest
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -23,10 +33,12 @@ jobs:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           MODEL: google/gemini-2.5-flash-lite
           FORCE: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
-        run: python digest.py
+          MODE: ${{ github.event.inputs.mode || 'digest' }}
+        run: |
+          if [ "$MODE" = "monthly" ]; then python digest.py --monthly; else python digest.py; fi
       - name: Commit results
         run: |
           git config user.name "digest-bot"
           git config user.email "digest-bot@users.noreply.github.com"
           git add -A
-          git diff --cached --quiet || (git commit -m "Update digest" && git push)
+          git diff --cached --quiet || (git commit -m "Update digest" && git pull --rebase && git push)
