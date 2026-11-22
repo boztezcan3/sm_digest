@@ -4,6 +4,7 @@
 Fetches each channel's RSS feed, applies your per-channel rules (channel_rules.json),
 asks an LLM (via OpenRouter) to choose the best ones, and writes a static page to docs/.
 """
+import argparse
 import csv
 import html
 import json
@@ -26,6 +27,14 @@ UA = "sm-digest/1.0 (personal digest)"
 MODEL = os.environ.get("MODEL", "google/gemini-2.5-flash-lite")
 API = "https://openrouter.ai/api/v1/chat/completions"
 TZ = ZoneInfo(CFG.get("timezone", "America/New_York"))
+
+# Monthly roundup (python digest.py --monthly). Same scoring as the regular run; only these differ.
+MONTHLY_WINDOW_DAYS = 30
+MONTHLY_LIST_SIZE = 25
+MONTHLY_MAX_PER_CHANNEL = 3
+MONTHLY_MAX_MUST = 10          # must-watch slots (regular run uses config.json "max_must")
+MONTHLY_MAX_CANDIDATES = 400   # cap on what is sent to the AI
+MONTHLY_EXCLUDE_SEEN = False   # False = include videos already shown in regular digests
 NS = {
     "a": "http://www.w3.org/2005/Atom",
     "yt": "http://www.youtube.com/xml/schemas/2015",
@@ -136,6 +145,41 @@ def fetch_channel(ch):
     return vids
 
 
+def fetch_channel_api(ch, key, since_ts):
+    """Uploads playlist via the YouTube Data API: reaches back further than the RSS feed's ~15 videos."""
+    cid, label, csv_priority = ch
+    out, token = [], None
+    for _ in range(4):  # up to 200 videos per channel
+        params = {"part": "snippet,contentDetails", "playlistId": "UU" + cid[2:], "maxResults": 50, "key": key}
+        if token:
+            params["pageToken"] = token
+        r = requests.get("https://www.googleapis.com/youtube/v3/playlistItems", params=params, timeout=20)
+        r.raise_for_status()
+        j = r.json()
+        reached_end = False
+        for it in j.get("items", []):
+            sn, cd = it["snippet"], it["contentDetails"]
+            if sn.get("title") in ("Private video", "Deleted video"):
+                continue
+            pub = cd.get("videoPublishedAt") or sn.get("publishedAt")
+            ts = datetime.fromisoformat(pub.replace("Z", "+00:00")).timestamp()
+            if ts < since_ts:
+                reached_end = True
+                continue
+            desc = (sn.get("description") or "").replace("\n", " ")
+            out.append({
+                "id": cd["videoId"], "title": sn.get("title", ""),
+                "channel": sn.get("videoOwnerChannelTitle") or label,
+                "channel_id": cid, "label": label, "csv_priority": csv_priority,
+                "published": ts, "desc_full": desc[:3000], "desc": desc[:200],
+                "views": None, "duration": None,
+            })
+        token = j.get("nextPageToken")
+        if reached_end or not token:
+            break
+    return out
+
+
 def passes_text_rules(v):
     r = v["rule"]
     hay = v["title"] + (" " + v["desc_full"] if r.get("search_description") else "")
@@ -189,18 +233,25 @@ def enrich_with_api(videos, key):
             v["views"] = int(it.get("statistics", {}).get("viewCount", v["views"] or 0))
 
 
-def collect_youtube(state, errors):
+def collect_youtube(state, errors, monthly=False):
     cfg = CFG["youtube"]
     channels = load_channels()
     if not channels:
         errors.append("No channels found (add subscriptions.csv or channels.txt).")
         return []
     channels = [c for c in channels if c[2] != "none"]  # Priority "none" = never show
-    seen = state["seen"]
+    seen = {} if (monthly and not MONTHLY_EXCLUDE_SEEN) else state["seen"]
     now = time.time()
     videos, failed = [], 0
+    window = MONTHLY_WINDOW_DAYS * 86400 if monthly else cfg.get("max_age_hours", 96) * 3600
+    api_key = (os.getenv("YOUTUBE_API_KEY") or "").strip()
 
     def safe(ch):
+        if monthly and api_key:
+            try:
+                return fetch_channel_api(ch, api_key, time.time() - window)
+            except Exception:
+                pass  # fall back to the RSS feed
         try:
             return fetch_channel(ch)
         except Exception:
@@ -215,7 +266,7 @@ def collect_youtube(state, errors):
     if failed:
         errors.append(f"{failed} of {len(channels)} channel feeds failed to load.")
 
-    max_age = cfg.get("max_age_hours", 96) * 3600
+    max_age = window
     videos = [v for v in videos if v["id"] not in seen and now - v["published"] <= max_age]
     for v in videos:
         v["rule"] = find_rule(v)
@@ -241,8 +292,12 @@ def collect_youtube(state, errors):
                       + " (is YOUTUBE_API_KEY set?).")
     unmatched = [k for k in RULES if k not in USED_RULES]
     if unmatched:
-        errors.append("Rules that matched no recent video (check the channel name spelling, or there were just "
-                      "no new videos): " + ", ".join(unmatched))
+        errors.append("Rules with no recent video to apply to (usually just no new uploads; if it keeps showing, "
+                      "check the channel name spelling): " + ", ".join(unmatched))
+    if monthly:  # priority channels first, then newest
+        rank = {"must": 0, "high": 1, "low": 3}
+        videos.sort(key=lambda v: (rank.get(v["rule"].get("priority"), 2), -v["published"]))
+        return videos[:MONTHLY_MAX_CANDIDATES]
     videos.sort(key=lambda v: v["published"], reverse=True)
     return videos[: cfg.get("max_candidates", 150)]
 
@@ -251,6 +306,8 @@ def collect_youtube(state, errors):
 def fmt_num(n):
     if n is None:
         return "?"
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M".replace(".0M", "M")
     return f"{n / 1000:.1f}k".replace(".0k", "k") if n >= 1000 else str(n)
 
 
@@ -284,7 +341,9 @@ def pick(cands, n, taste, extra_rules, errors):
         f"choose the {n} best for this viewer.\n\nViewer's taste:\n{taste}\n\n"
         f"Rules: quality and relevance over raw popularity; keep variety. {extra_rules}\n"
         "Strongly favor videos tagged HIGH PRIORITY CHANNEL; pick LOW PRIORITY CHANNEL videos only if "
-        "nothing better is available.\n"
+        "nothing better is available. Never mention these tags or priorities in your reasons. "
+        "You only see titles and short descriptions, so describe what the video is about without guessing "
+        "or hedging ('likely', 'probably').\n"
         'For each pick give a short reason (max 15 words) on why this viewer would care. '
         'Return ONLY a JSON array, best first, like [{"i": 3, "why": "..."}]. No markdown.\n\n'
         f"Candidates:\n{listing}"
@@ -320,11 +379,12 @@ body{font:16px/1.5 -apple-system,system-ui,Segoe UI,Roboto,sans-serif;background
 h1{margin:0 0 4px}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}
 .sub{color:var(--mut);font-size:14px}ul{list-style:none;padding:0;margin-top:24px}
 li{padding:10px 0;border-bottom:1px solid var(--line)}.meta{color:var(--mut);font-size:13px}
+.badge{font-size:12px;border:1px solid var(--line);border-radius:4px;padding:0 6px;margin-left:8px;color:var(--mut)}
 .why{font-size:14px;margin-top:2px}.err{color:var(--mut);font-size:13px;margin-top:32px}
 """
 
 
-def render_page(date_label, items, errors, archive_href, home_href=None):
+def render_page(date_label, items, errors, archive_href, home_href=None, title="YouTube digest"):
     rows = "".join(
         f'<li><a href="{html.escape(v["url"])}">{html.escape(("★ " if v["rule"].get("always_include") or v["rule"].get("priority") in ("must", "high") else "") + v["title"])}</a>'
         f'<div class="meta">{html.escape(" · ".join(x for x in [v["channel"], fmt_dur(v["duration"]), (fmt_num(v["views"]) + " views") if v["views"] is not None else "", fmt_age(v["published"])] if x))}</div>'
@@ -339,24 +399,46 @@ def render_page(date_label, items, errors, archive_href, home_href=None):
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         '<meta name="robots" content="noindex">'
-        f"<title>YouTube digest {html.escape(date_label)}</title><style>{CSS}</style></head><body>"
-        f'<h1>YouTube digest</h1><div class="sub">{html.escape(date_label)} · {len(items)} videos · ★ = priority channel · {nav}</div>'
+        f"<title>{html.escape(title)} {html.escape(date_label)}</title><style>{CSS}</style></head><body>"
+        f'<h1>{html.escape(title)}</h1><div class="sub">{html.escape(date_label)} · {len(items)} videos · ★ = priority channel · {nav}</div>'
         f"<ul>{rows}</ul>{err}</body></html>"
     )
 
 
-def write_site(now, items, errors):
+def write_site(now, items, errors, monthly=False, n_candidates=0):
     arch = DOCS / "archive"
     arch.mkdir(parents=True, exist_ok=True)
     (DOCS / ".nojekyll").touch()  # plain HTML site: tell GitHub Pages not to run Jekyll
     local = now.astimezone(TZ)
     label = local.strftime("%A, %B %d, %Y").replace(" 0", " ")
     stamp = local.strftime("%Y-%m-%d")
-    (DOCS / "index.html").write_text(render_page(label, items, errors, "archive/index.html"), encoding="utf-8")
-    (arch / f"{stamp}.html").write_text(
-        render_page(label, items, errors, "index.html", "../index.html"), encoding="utf-8")
-    pages = sorted((p.stem for p in arch.glob("2*.html")), reverse=True)
-    links = "".join(f'<li><a href="{p}.html">{p}</a></li>' for p in pages)
+    if monthly:
+        title = f"Monthly digest: last {MONTHLY_WINDOW_DAYS} days"
+        (arch / f"monthly-{stamp}.html").write_text(
+            render_page(label, items, errors, "index.html", "../index.html", title), encoding="utf-8")
+        meta = {
+            "mode": "monthly", "date": stamp, "generated": now.isoformat(),
+            "window_days": MONTHLY_WINDOW_DAYS, "list_size": MONTHLY_LIST_SIZE,
+            "candidates": n_candidates, "count": len(items),
+            "videos": [{"id": v["id"], "title": v["title"], "channel": v["channel"], "url": v["url"]}
+                       for v, _ in items],
+        }
+        (arch / f"monthly-{stamp}.json").write_text(
+            json.dumps(meta, indent=1, ensure_ascii=False), encoding="utf-8")
+    else:  # the regular run owns the main page
+        (DOCS / "index.html").write_text(render_page(label, items, errors, "archive/index.html"), encoding="utf-8")
+        (arch / f"{stamp}.html").write_text(
+            render_page(label, items, errors, "index.html", "../index.html"), encoding="utf-8")
+
+    entries = []
+    for p in arch.glob("*.html"):
+        m = re.match(r"(monthly-)?(\d{4}-\d{2}-\d{2})$", p.stem)
+        if m:
+            entries.append((m.group(2), bool(m.group(1)), p.stem))
+    entries.sort(reverse=True)
+    links = "".join(
+        f'<li><a href="{stem}.html">{date}</a>' + ('<span class="badge">Monthly</span>' if is_m else "") + "</li>"
+        for date, is_m, stem in entries)
     (arch / "index.html").write_text(
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
@@ -367,23 +449,30 @@ def write_site(now, items, errors):
 
 # ----------------------------------------------------------------- main
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--monthly", action="store_true",
+                    help=f"{MONTHLY_WINDOW_DAYS}-day roundup (top {MONTHLY_LIST_SIZE}); leaves the main page and seen-state alone")
+    monthly = ap.parse_args().monthly
+
     now = datetime.now(timezone.utc)
     state = load_state()
-    if os.getenv("FORCE") != "1" and state["last_run"]:
+    if not monthly and os.getenv("FORCE") != "1" and state["last_run"]:
         last = datetime.fromisoformat(state["last_run"])
         if now - last < timedelta(hours=CFG.get("min_hours_between_runs", 46)):
             print(f"Last run {last.isoformat()} is recent; skipping.")
             return
 
     errors = []
-    cands = collect_youtube(state, errors)
-    print(f"{len(cands)} candidates")
+    cands = collect_youtube(state, errors, monthly)
+    print(f"{len(cands)} candidates ({'monthly' if monthly else 'regular'})")
     y = CFG["youtube"]
-    n = y["count"]
+    n = MONTHLY_LIST_SIZE if monthly else y["count"]
+    max_must = MONTHLY_MAX_MUST if monthly else y.get("max_must", 6)
+    per_channel = MONTHLY_MAX_PER_CHANNEL if monthly else 2
 
     must_all = sorted((v for v in cands if v["rule"].get("always_include") or v["rule"].get("priority") == "must"),
                       key=lambda v: v["published"], reverse=True)
-    must = must_all[: min(y.get("max_must", 6), n)]
+    must = must_all[: min(max_must, n)]
     for v in must_all[len(must):]:  # overflow competes with the rest as high priority
         v["rule"] = dict(v["rule"], priority="high", always_include=False)
     must_ids = {v["id"] for v in must}
@@ -393,18 +482,22 @@ def main():
     for v in rest:
         if v["rule"].get("note"):
             notes[v["channel"]] = v["rule"]["note"]
-    extra = "Avoid more than 2 from one channel unless exceptional."
+    extra = f"Avoid more than {per_channel} from one channel unless exceptional."
+    if monthly:
+        extra += (f" These videos span the last {MONTHLY_WINDOW_DAYS} days: pick the best across the "
+                  "whole period, not just the newest.")
     if notes:
         extra += " Per-channel instructions: " + " ".join(f'For "{c}": {t}' for c, t in notes.items())
 
     items = [(v, "Must-watch channel") for v in must] + pick(rest, n - len(must), y["taste"], extra, errors)
 
-    t = time.time()
-    state["seen"].update({v["id"]: t for v, _ in items})
-    state["last_run"] = now.isoformat()
-    save_state(state)
-    write_site(now, items, errors)
-    print(f"Wrote digest with {len(items)} videos.")
+    if not monthly:  # the monthly roundup never changes what the regular run considers "seen"
+        t = time.time()
+        state["seen"].update({v["id"]: t for v, _ in items})
+        state["last_run"] = now.isoformat()
+        save_state(state)
+    write_site(now, items, errors, monthly, len(cands))
+    print(f"Wrote {'monthly ' if monthly else ''}digest with {len(items)} videos.")
 
 
 if __name__ == "__main__":
