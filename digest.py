@@ -413,17 +413,20 @@ def write_site(now, items, errors, monthly=False, n_candidates=0):
     label = local.strftime("%A, %B %d, %Y").replace(" 0", " ")
     stamp = local.strftime("%Y-%m-%d")
     if monthly:
+        # date + time in the name, so every monthly run is kept (none overwrites another)
+        mstamp = local.strftime("%Y-%m-%d-%H%M")
+        label += local.strftime(", %-I:%M %p")
         title = f"Monthly digest: last {MONTHLY_WINDOW_DAYS} days"
-        (arch / f"monthly-{stamp}.html").write_text(
+        (arch / f"monthly-{mstamp}.html").write_text(
             render_page(label, items, errors, "index.html", "../index.html", title), encoding="utf-8")
         meta = {
-            "mode": "monthly", "date": stamp, "generated": now.isoformat(),
+            "mode": "monthly", "date": stamp, "time": local.strftime("%H:%M"), "generated": now.isoformat(),
             "window_days": MONTHLY_WINDOW_DAYS, "list_size": MONTHLY_LIST_SIZE,
             "candidates": n_candidates, "count": len(items),
             "videos": [{"id": v["id"], "title": v["title"], "channel": v["channel"], "url": v["url"]}
                        for v, _ in items],
         }
-        (arch / f"monthly-{stamp}.json").write_text(
+        (arch / f"monthly-{mstamp}.json").write_text(
             json.dumps(meta, indent=1, ensure_ascii=False), encoding="utf-8")
     else:  # the regular run owns the main page
         (DOCS / "index.html").write_text(render_page(label, items, errors, "archive/index.html"), encoding="utf-8")
@@ -432,13 +435,16 @@ def write_site(now, items, errors, monthly=False, n_candidates=0):
 
     entries = []
     for p in arch.glob("*.html"):
-        m = re.match(r"(monthly-)?(\d{4}-\d{2}-\d{2})$", p.stem)
+        m = re.match(r"(monthly-)?(\d{4}-\d{2}-\d{2})(?:-(\d{2})(\d{2}))?$", p.stem)
         if m:
-            entries.append((m.group(2), bool(m.group(1)), p.stem))
+            hhmm = f"{m.group(3)}:{m.group(4)}" if m.group(3) else ""
+            entries.append((m.group(2), hhmm, bool(m.group(1)), p.stem))
     entries.sort(reverse=True)
     links = "".join(
-        f'<li><a href="{stem}.html">{date}</a>' + ('<span class="badge">Monthly</span>' if is_m else "") + "</li>"
-        for date, is_m, stem in entries)
+        f'<li><a href="{stem}.html">'
+        + (f"Monthly digest · {date}" + (f" {hhmm}" if hhmm else "") if is_m else date)
+        + "</a></li>"
+        for date, hhmm, is_m, stem in entries)
     (arch / "index.html").write_text(
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
