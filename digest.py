@@ -42,6 +42,19 @@ RULES = {
 USED_RULES = set()
 
 
+def safe_err(e):
+    """Error text that is safe to publish: never include API keys."""
+    t = f"{type(e).__name__}: {e}"
+    for name in ("OPENROUTER_API_KEY", "YOUTUBE_API_KEY"):
+        val = (os.environ.get(name) or "").strip()
+        if val:
+            t = t.replace(val, "[hidden]")
+    t = re.sub(r"(?i)bearer\s+\S+", "Bearer [hidden]", t)
+    t = re.sub(r"(?i)([?&]key=)[^&\s'\"]+", r"\1[hidden]", t)
+    t = re.sub(r"sk-[A-Za-z0-9_\-]+", "[hidden]", t)
+    return t[:300]
+
+
 # ---------------------------------------------------------------- state
 def load_state():
     s = json.loads(STATE_PATH.read_text(encoding="utf-8")) if STATE_PATH.exists() else {}
@@ -213,12 +226,12 @@ def collect_youtube(state, errors):
         flags = list(ex.map(lambda v: is_short(v["id"]), videos))
     videos = [v for v, s in zip(videos, flags) if not s]
 
-    key = os.getenv("YOUTUBE_API_KEY")
+    key = (os.getenv("YOUTUBE_API_KEY") or "").strip()
     if key and videos:
         try:
             enrich_with_api(videos, key)
         except Exception as e:
-            errors.append(f"YouTube API enrichment failed: {e}")
+            errors.append(f"YouTube API enrichment failed: {safe_err(e)}")
     unknown = set()
     min_s = cfg.get("min_minutes", 0) * 60
     videos = [v for v in videos
@@ -279,7 +292,7 @@ def pick(cands, n, taste, extra_rules, errors):
     try:
         r = requests.post(
             API,
-            headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"},
+            headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY'].strip()}"},
             json={"model": MODEL, "max_tokens": 3000, "messages": [{"role": "user", "content": prompt}]},
             timeout=120,
         )
@@ -295,7 +308,7 @@ def pick(cands, n, taste, extra_rules, errors):
         if out:
             return out[:n]
     except Exception as e:
-        errors.append(f"AI selection failed ({type(e).__name__}: {e}); showing the newest videos instead.")
+        errors.append(f"AI selection failed ({safe_err(e)}); showing the newest videos instead.")
     return [(c, "") for c in cands[:n]]
 
 
@@ -335,6 +348,7 @@ def render_page(date_label, items, errors, archive_href, home_href=None):
 def write_site(now, items, errors):
     arch = DOCS / "archive"
     arch.mkdir(parents=True, exist_ok=True)
+    (DOCS / ".nojekyll").touch()  # plain HTML site: tell GitHub Pages not to run Jekyll
     local = now.astimezone(TZ)
     label = local.strftime("%A, %B %d, %Y").replace(" 0", " ")
     stamp = local.strftime("%Y-%m-%d")
