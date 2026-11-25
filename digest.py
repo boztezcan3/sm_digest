@@ -88,7 +88,8 @@ def load_channels():
                 row = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
                 cid = row.get("channel id", "")
                 if cid:
-                    chans[cid] = (row.get("channel title", "") or cid, row.get("priority", "").lower())
+                    fmt = next((row[k].lower() for k in ("format", "type", "mode", "medium", "audio/video") if row.get(k)), "")
+                    chans[cid] = (row.get("channel title", "") or cid, row.get("priority", "").lower(), fmt)
     txt_path = ROOT / "channels.txt"
     if txt_path.exists():
         for line in txt_path.read_text(encoding="utf-8").splitlines():
@@ -97,8 +98,8 @@ def load_channels():
                 continue
             cid, _, label = line.partition("#")
             if cid.strip():
-                chans[cid.strip()] = (label.strip() or cid.strip(), "")
-    return [(cid, label, pri) for cid, (label, pri) in chans.items()]
+                chans[cid.strip()] = (label.strip() or cid.strip(), "", "")
+    return [(cid, label, pri, fmt) for cid, (label, pri, fmt) in chans.items()]
 
 
 def find_rule(v):
@@ -113,11 +114,13 @@ def find_rule(v):
     pri = (rule.get("priority") or v.get("csv_priority") or "").strip().lower()
     if pri in ("must", "high", "low"):
         rule["priority"] = pri
+    fmt = (rule.get("format") or v.get("csv_format") or CFG["youtube"].get("default_format", "video")).strip().lower()
+    rule["format"] = "audio" if fmt.startswith("a") else "video"
     return rule
 
 
 def fetch_channel(ch):
-    cid, label, csv_priority = ch
+    cid, label, csv_priority, csv_format = ch
     r = requests.get(
         f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}",
         headers={"User-Agent": UA}, timeout=20,
@@ -136,6 +139,7 @@ def fetch_channel(ch):
             "channel_id": cid,
             "label": label,
             "csv_priority": csv_priority,
+            "csv_format": csv_format,
             "published": datetime.fromisoformat(e.findtext("a:published", namespaces=NS)).timestamp(),
             "desc_full": desc[:3000],
             "desc": desc[:200],
@@ -147,7 +151,7 @@ def fetch_channel(ch):
 
 def fetch_channel_api(ch, key, since_ts):
     """Uploads playlist via the YouTube Data API: reaches back further than the RSS feed's ~15 videos."""
-    cid, label, csv_priority = ch
+    cid, label, csv_priority, csv_format = ch
     out, token = [], None
     for _ in range(4):  # up to 200 videos per channel
         params = {"part": "snippet,contentDetails", "playlistId": "UU" + cid[2:], "maxResults": 50, "key": key}
@@ -170,7 +174,7 @@ def fetch_channel_api(ch, key, since_ts):
             out.append({
                 "id": cd["videoId"], "title": sn.get("title", ""),
                 "channel": sn.get("videoOwnerChannelTitle") or label,
-                "channel_id": cid, "label": label, "csv_priority": csv_priority,
+                "channel_id": cid, "label": label, "csv_priority": csv_priority, "csv_format": csv_format,
                 "published": ts, "desc_full": desc[:3000], "desc": desc[:200],
                 "views": None, "duration": None,
             })
@@ -377,20 +381,32 @@ CSS = """
 @media(prefers-color-scheme:dark){:root{--bg:#161616;--fg:#e8e8e8;--mut:#9a9a9a;--link:#8ab4f8;--line:#2c2c2c}}
 body{font:16px/1.5 -apple-system,system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--fg);max-width:760px;margin:0 auto;padding:24px 16px 64px}
 h1{margin:0 0 4px}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}
-.sub{color:var(--mut);font-size:14px}ul{list-style:none;padding:0;margin-top:24px}
+.sub{color:var(--mut);font-size:14px}h2{margin:28px 0 0;border-bottom:1px solid var(--line);padding-bottom:4px}
+ul{list-style:none;padding:0;margin-top:8px}
 li{padding:10px 0;border-bottom:1px solid var(--line)}.meta{color:var(--mut);font-size:13px}
 .badge{font-size:12px;border:1px solid var(--line);border-radius:4px;padding:0 6px;margin-left:8px;color:var(--mut)}
 .why{font-size:14px;margin-top:2px}.err{color:var(--mut);font-size:13px;margin-top:32px}
 """
 
 
+def render_row(v, why):
+    star = "★ " if v["rule"].get("always_include") or v["rule"].get("priority") in ("must", "high") else ""
+    meta = " · ".join(x for x in [v["channel"], fmt_dur(v["duration"]),
+                                  (fmt_num(v["views"]) + " views") if v["views"] is not None else "",
+                                  fmt_age(v["published"])] if x)
+    return (f'<li><a href="{html.escape(v["url"])}">{html.escape(star + v["title"])}</a>'
+            f'<div class="meta">{html.escape(meta)}</div>'
+            + (f'<div class="why">{html.escape(why)}</div>' if why else "") + "</li>")
+
+
 def render_page(date_label, items, errors, archive_href, home_href=None, title="YouTube digest"):
-    rows = "".join(
-        f'<li><a href="{html.escape(v["url"])}">{html.escape(("★ " if v["rule"].get("always_include") or v["rule"].get("priority") in ("must", "high") else "") + v["title"])}</a>'
-        f'<div class="meta">{html.escape(" · ".join(x for x in [v["channel"], fmt_dur(v["duration"]), (fmt_num(v["views"]) + " views") if v["views"] is not None else "", fmt_age(v["published"])] if x))}</div>'
-        + (f'<div class="why">{html.escape(why)}</div>' if why else "") + "</li>"
-        for v, why in items
-    ) or '<li class="meta">Nothing new this time.</li>'
+    sections = ""
+    for key, head in (("video", "Video"), ("audio", "Audio")):
+        group = [(v, w) for v, w in items if v["rule"].get("format", "video") == key]
+        if group:
+            sections += f"<h2>{head} ({len(group)})</h2><ul>" + "".join(render_row(v, w) for v, w in group) + "</ul>"
+    if not sections:
+        sections = '<ul><li class="meta">Nothing new this time.</li></ul>'
     err = ('<div class="err">Notes:<br>' + "<br>".join(html.escape(e) for e in errors) + "</div>") if errors else ""
     nav = f'<a href="{archive_href}">Past digests</a>'
     if home_href:
@@ -401,7 +417,7 @@ def render_page(date_label, items, errors, archive_href, home_href=None, title="
         '<meta name="robots" content="noindex">'
         f"<title>{html.escape(title)} {html.escape(date_label)}</title><style>{CSS}</style></head><body>"
         f'<h1>{html.escape(title)}</h1><div class="sub">{html.escape(date_label)} · {len(items)} videos · ★ = priority channel · {nav}</div>'
-        f"<ul>{rows}</ul>{err}</body></html>"
+        f"{sections}{err}</body></html>"
     )
 
 
@@ -423,7 +439,8 @@ def write_site(now, items, errors, monthly=False, n_candidates=0):
             "mode": "monthly", "date": stamp, "time": local.strftime("%H:%M"), "generated": now.isoformat(),
             "window_days": MONTHLY_WINDOW_DAYS, "list_size": MONTHLY_LIST_SIZE,
             "candidates": n_candidates, "count": len(items),
-            "videos": [{"id": v["id"], "title": v["title"], "channel": v["channel"], "url": v["url"]}
+            "videos": [{"id": v["id"], "title": v["title"], "channel": v["channel"], "url": v["url"],
+                        "format": v["rule"].get("format", "video")}
                        for v, _ in items],
         }
         (arch / f"monthly-{mstamp}.json").write_text(
