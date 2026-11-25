@@ -1,12 +1,13 @@
 {
   "timezone": "America/New_York",
-  "min_hours_between_runs": 46,
+  "min_hours_between_runs": 36,
   "youtube": {
     "count": 10,
     "max_age_hours": 96,
     "max_candidates": 150,
     "min_minutes": 0,
     "taste": "I like in-depth, well-produced videos: explainers, analysis, interviews, and good long-form content. Skip clickbait, reaction videos, and low-effort uploads. Variety across channels is better than several videos from one channel.",
-    "max_must": 6
+    "max_must": 6,
+    "default_format": "video"
   }
 }
