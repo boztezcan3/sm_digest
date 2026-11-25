@@ -1,5 +1,5 @@
 {
-  "_help": "Keys are channel names (as shown on YouTube) or channel IDs, case-insensitive. Options: include_regex, exclude_regex (match the video title; add \"search_description\": true to also search the description), min_minutes, max_minutes, priority (\"high\" or \"low\"), always_include (true = always shown, skips the AI), note (free-text instruction for the AI). Delete the examples below and add your own.",
+  "_help": "Keys are channel names (as shown on YouTube) or channel IDs, case-insensitive. Options: include_regex, exclude_regex (match the video title; add \"search_description\": true to also search the description), min_minutes, max_minutes, priority (\"must\", \"high\" or \"low\"), format (\"audio\" or \"video\", overrides the CSV), always_include (true = always shown, skips the AI), note (free-text instruction for the AI). Delete the examples below and add your own.",
 
   "Socrates Dergi": {
     "include_regex": "Amerikan Mutfak"
